@@ -17,7 +17,7 @@ from datasets.hpatches import HPatchesDataset
 from datasets.megadepth import MegaDepthDataset
 from datasets.cat_datasets import ConcatDatasets
 from training.scheduler import WarmupConstantSchedule
-
+from training.train_wrapper import TrainWrapper
 from pytorch_lightning.callbacks import Callback
 
 
@@ -37,13 +37,14 @@ if __name__ == '__main__':
     torch.autograd.set_detect_anomaly(True)
 
     pretrained_model = None
-    debug = False
+    debug = True
 
     c1 = 8
     c2 = 16
     c3 = 32
     c4 = 64
     dim = 64
+    gray = False
 
     radius = 2
     top_k = 400
@@ -68,10 +69,11 @@ if __name__ == '__main__':
     image_size = 480
     log_freq_img = 400
 
-    hpatch_dir = '../data/hpatches'
-    mega_dir = '../data/megadepth'
-    imw2020val_dir = '../data/imw2020val'
     log_dir = 'log_' + Path(__file__).stem
+
+    hpatch_dir = '/media/ddc_robot/4cda377d-28db-4424-921c-6a1e0545ceeb/WangShuo/datasets/HPatch'
+    mega_dir = '/media/ddc_robot/4cda377d-28db-4424-921c-6a1e0545ceeb/Dataset/disk-data/megadepth'
+    imw2020val_dir = '/media/ddc_robot/4cda377d-28db-4424-921c-6a1e0545ceeb/Dataset/disk-data/imw2020-val'
 
     batch_size = 1
     if debug:
@@ -142,6 +144,17 @@ if __name__ == '__main__':
                          ]
                          )
 
-    # model = Model()
-    # trainer.fit(model, train_dataloaders=[train_loader],
-    #             val_dataloaders=[hpatch_i_dataloader, hpatch_v_dataloader, imw2020val_dataloader])
+    model = TrainWrapper(
+        c1=c1, c2=c2, c3=c3, c4=c4, dim=dim, gray=gray,
+        radius=radius, top_k=top_k, scores_th=0, n_limit=0,
+        scores_th_eval=scores_th_eval, n_limit_eval=n_limit_eval,
+        train_gt_th=train_gt_th, eval_gt_th=eval_gt_th,
+        w_pk=w_pk, w_rp=w_rp, w_sp=w_sp, w_ds=w_ds,
+        sc_th=sc_th, norm=norm, temp_sp=temp_sp, temp_ds=temp_ds,
+        lr = 3e-4, log_freq_img=log_freq_img,
+        pretrained_model=pretrained_model,
+        lr_scheduler=lr_scheduler,
+        debug=debug)
+
+    trainer.fit(model, train_dataloaders=[train_loader],
+                val_dataloaders=[hpatch_i_dataloader, hpatch_v_dataloader, imw2020val_dataloader])
