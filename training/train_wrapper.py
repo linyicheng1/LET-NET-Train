@@ -60,6 +60,12 @@ class TrainWrapper(LETNetTrain):
         self.pretrained_model = pretrained_model
         self.lr_scheduler = lr_scheduler
         self.debug = debug
+        self.top_k = top_k
+        self.scores_th = scores_th
+        self.n_limit = n_limit
+
+        self.softdetect = SoftDetect(radius=self.radius, top_k=top_k,
+                                     scores_th=scores_th, n_limit=n_limit)
 
         #  ================ load pretrained model ================
         if pretrained_model is not None:
@@ -112,28 +118,28 @@ class TrainWrapper(LETNetTrain):
                                                    "val_mma_mean": 0, })
 
     def training_step(self, batch, batch_idx):
-        b, c, h, w = batch['image0'].shape
+        b, c, h, w = batch[0]['image0'].shape
 
-        pred0 = super().extract_dense_map(batch['image0'], True)
-        pred1 = super().extract_dense_map(batch['image1'], True)
+        pred0 = super().extract_dense_map(batch[0]['image0'], True)
+        pred1 = super().extract_dense_map(batch[0]['image1'], True)
 
         # ================ compute loss ================
 
-        correspondences, pred0_with_rand, pred1_with_rand = self.compute_correspondence(pred0, pred1, batch)
+        correspondences, pred0_with_rand, pred1_with_rand = self.compute_correspondence(pred0, pred1, batch[0])
 
         loss = 0
         loss_package = {}
 
         if self.w_pk > 0:
-            loss_peaky0 = self.PeakyLoss(pred0_with_rand)
-            loss_peaky1 = self.PeakyLoss(pred1_with_rand)
+            loss_peaky0 = self.pk_loss(pred0_with_rand)
+            loss_peaky1 = self.pk_loss(pred1_with_rand)
             loss_peaky = (loss_peaky0 + loss_peaky1) / 2.
 
             loss += self.w_pk * loss_peaky
             loss_package['loss_peaky'] = loss_peaky
 
         if self.w_rp > 0:
-            loss_reprojection = self.ReprojectionLocLoss(pred0_with_rand, pred1_with_rand, correspondences)
+            loss_reprojection = self.rp_loss(pred0_with_rand, pred1_with_rand, correspondences)
 
             loss += self.w_rp * loss_reprojection
             loss_package['loss_reprojection'] = loss_reprojection
@@ -170,11 +176,11 @@ class TrainWrapper(LETNetTrain):
             pred['desc0'].append(pred0_with_rand['descriptors'][idx][:num_det0])
             pred['desc1'].append(pred1_with_rand['descriptors'][idx][:num_det1])
 
-        accuracy = self.evaluate(pred, batch)
+        accuracy = self.evaluate(pred, batch[0])
         self.log('train_acc', accuracy, prog_bar=True)
 
         if batch_idx % self.log_freq_img == 0:
-            self.log_image_and_score(batch, pred, 'train_')
+            self.log_image_and_score(batch[0], pred, 'train_')
 
         assert not torch.isnan(loss)
         return loss

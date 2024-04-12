@@ -27,9 +27,9 @@ class RebuildDatasetCallback(Callback):
         pass
 
     def on_train_epoch_start(self, trainer, pl_module):
-        train_loader_dataset = trainer.train_dataloader.dataset
-        train_loader_dataset.datasets.datasets[0].build_dataset()
-        train_loader_dataset.datasets.datasets[1].build_dataset()
+        train_loader_dataset = trainer.train_dataloader[0].dataset
+        train_loader_dataset.datasets[0].build_dataset()
+        train_loader_dataset.datasets[1].build_dataset()
 
 
 if __name__ == '__main__':
@@ -37,7 +37,7 @@ if __name__ == '__main__':
     torch.autograd.set_detect_anomaly(True)
 
     pretrained_model = None
-    debug = True
+    debug = False
 
     c1 = 8
     c2 = 16
@@ -124,7 +124,7 @@ if __name__ == '__main__':
     logger = TensorBoardLogger(save_dir=log_dir, name=log_name, version=version, default_hp_metric=False)
     logging.info(f'>>>>>>>>>>>>>>>>> log dir: {logger.log_dir}')
 
-    trainer = pl.Trainer(gpus=gpus,
+    trainer = pl.Trainer(devices=gpus,
                          fast_dev_run=False,
                          accumulate_grad_batches=accumulate_grad_batches,
                          num_sanity_val_steps=num_sanity_val_steps,
@@ -132,7 +132,7 @@ if __name__ == '__main__':
                          limit_val_batches=limit_val_batches,
                          max_epochs=max_epochs,
                          logger=logger,
-                         reload_dataloaders_every_epoch=reload_dataloaders_every_epoch,
+                         reload_dataloaders_every_n_epochs=reload_dataloaders_every_epoch,
                          callbacks=[
                              ModelCheckpoint(monitor='val_metrics/mean', save_top_k=3,
                                              mode='max', save_last=True,
@@ -151,7 +151,7 @@ if __name__ == '__main__':
         train_gt_th=train_gt_th, eval_gt_th=eval_gt_th,
         w_pk=w_pk, w_rp=w_rp, w_sp=w_sp, w_ds=w_ds,
         sc_th=sc_th, norm=norm, temp_sp=temp_sp, temp_ds=temp_ds,
-        lr = 3e-4, log_freq_img=log_freq_img,
+        lr=3e-4, log_freq_img=log_freq_img,
         pretrained_model=pretrained_model,
         lr_scheduler=lr_scheduler,
         debug=debug)

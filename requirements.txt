@@ -8,3 +8,4 @@ torchvision~=0.17.2
 matplotlib~=3.7.5
 tqdm~=4.66.2
 h5py~=3.10.0
+tensorboard~=2.14.0
