@@ -556,7 +556,7 @@ class TrainWrapper(LETNetTrain):
 
         # ==================================== extract keypoints and descriptors
         detector = SoftDetect(radius=self.radius, top_k=self.top_k,
-                              scores_th=self.scores_th, n_limit=0)
+                              scores_th=self.scores_th, n_limit=self.n_limit_eval)
 
         desc_map_0, score_map_0, local_desc_0 = super().extract_dense_map(batch['image0'])
         kps_0, desc0, kps_scores_0, score_disp_0 = detector(score_map_0, desc_map_0)
@@ -581,7 +581,14 @@ class TrainWrapper(LETNetTrain):
             # ==================================== covisible keypoints
             kpts0_cov, kpts01_cov, _, _ = warp(kps_0, warp01_params)
             kpts1_cov, kpts10_cov, _, _ = warp(kps_1, warp10_params)
-
+            if len(kpts0_cov) == 0 or len(kpts1_cov) == 0:
+                return (torch.tensor([float('inf')]),
+                        num_feat,  # feature number
+                        0,  # repeatability
+                        0,  # accuracy
+                        0,  # matching score
+                        0,  # recall
+                        )
             num_cov_feat = (len(kpts0_cov) + len(kpts1_cov)) / 2  # number of covisible keypoints
 
             # ==================================== get gt matching keypoints
