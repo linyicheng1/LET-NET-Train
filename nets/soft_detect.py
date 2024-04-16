@@ -82,7 +82,7 @@ class SoftDetect(LightningModule):
         # (kernel_size*kernel_size) x 2 : (w,h)
         self.hw_grid = torch.stack(torch.meshgrid([x, x])).view(2, -1).t()[:, [1, 0]]
 
-    def detect_keypoints(self, scores_map, normalized_coordinates=True):
+    def detect_keypoints_old(self, scores_map, normalized_coordinates=True):
         b, c, h, w = scores_map.shape
         scores_nograd = scores_map.detach()
         # nms_scores = simple_nms(scores_nograd, self.radius)
@@ -157,13 +157,80 @@ class SoftDetect(LightningModule):
 
         return keypoints, scoredispersitys, kptscores
 
+    def detect_keypoints(self, scores_map, normalized_coordinates=True):
+        b, c, h, w = scores_map.shape
+        scores_nograd = scores_map.detach()
+        nms_scores = simple_nms(scores_nograd, 2)
+
+        # remove border
+        nms_scores[:, :, :self.radius + 1, :] = 0
+        nms_scores[:, :, :, :self.radius + 1] = 0
+        nms_scores[:, :, h - self.radius:, :] = 0
+        nms_scores[:, :, :, w - self.radius:] = 0
+
+        # detect keypoints without grad
+        if self.top_k > 0:
+            topk = torch.topk(nms_scores.view(b, -1), self.top_k)
+            indices_keypoints = topk.indices  # B x top_k
+        else:
+            if self.scores_th > 0:
+                masks = nms_scores > self.scores_th
+                if masks.sum() == 0:
+                    th = scores_nograd.reshape(b, -1).mean(dim=1)  # th = self.scores_th
+                    masks = nms_scores > th.reshape(b, 1, 1, 1)
+            else:
+                th = scores_nograd.reshape(b, -1).mean(dim=1)  # th = self.scores_th
+                masks = nms_scores > th.reshape(b, 1, 1, 1)
+            masks = masks.reshape(b, -1)
+
+            indices_keypoints = []  # list, B x (any size)
+            scores_view = scores_nograd.reshape(b, -1)
+            for mask, scores in zip(masks, scores_view):
+                indices = mask.nonzero(as_tuple=False)[:, 0]
+                if len(indices) > self.n_limit:
+                    kpts_sc = scores[indices]
+                    sort_idx = kpts_sc.sort(descending=True)[1]
+                    sel_idx = sort_idx[:self.n_limit]
+                    indices = indices[sel_idx]
+                indices_keypoints.append(indices)
+
+        # detect soft keypoints with grad backpropagation
+        patches = self.unfold(scores_map)  # B x (kernel**2) x (H*W)
+        self.hw_grid = self.hw_grid.to(patches)  # to device
+        keypoints = []
+        kptscores = []
+        for b_idx in range(b):
+            patch = patches[b_idx].t()  # (H*W) x (kernel**2)
+            indices_kpt = indices_keypoints[b_idx]  # one dimension vector, say its size is M
+            patch_scores = patch[indices_kpt]  # M x (kernel**2)
+
+            # max is detached to prevent undesired backprop loops in the graph
+            max_v = patch_scores.max(dim=1).values.detach()[:, None]
+            x_exp = ((patch_scores - max_v) / self.temperature).exp()  # M * (kernel**2), in [0, 1]
+
+            # \frac{ \sum{(i,j) \times \exp(x/T)} }{ \sum{\exp(x/T)} }
+            xy_residual = x_exp @ self.hw_grid / x_exp.sum(dim=1)[:, None]  # Soft-argmax, Mx2
+
+            # compute result keypoints
+            keypoints_xy_nms = torch.stack([indices_kpt % w, indices_kpt // w], dim=1)  # Mx2
+            keypoints_xy = keypoints_xy_nms + xy_residual
+            if normalized_coordinates:
+                keypoints_xy = keypoints_xy / keypoints_xy.new_tensor([w - 1, h - 1]) * 2 - 1  # (w,h) -> (-1~1,-1~1)
+
+            kptscore = torch.nn.functional.grid_sample(scores_map[b_idx].unsqueeze(0), keypoints_xy.view(1, 1, -1, 2),
+                                                       mode='bilinear', align_corners=True)[0, 0, 0, :]  # CxN
+
+            keypoints.append(keypoints_xy)
+            kptscores.append(kptscore)
+        return keypoints, kptscores
+
     def forward(self, scores_map, descriptor_map, normalized_coordinates=True):
         """
         :param scores_map:  Bx1xHxW
         :param descriptor_map: BxCxHxW
         :return: kpts: list[Nx2,...]; kptscores: list[N,....] normalised position: -1.0 ~ 1.0
         """
-        keypoints, scoredispersitys, kptscores = self.detect_keypoints(scores_map,
+        keypoints, scoredispersitys, kptscores = self.detect_keypoints_old(scores_map,
                                                                        normalized_coordinates)
 
         descriptors = sample_descriptor(descriptor_map, keypoints)

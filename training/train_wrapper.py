@@ -85,13 +85,17 @@ class TrainWrapper(LETNetTrain):
         # ================ losses ================
 
         if self.w_pk > 0:
-            self.pk_loss = PeakyLoss(scores_th=sc_th)
+            self.pk_loss_old = PeakyLoss_old(scores_th=sc_th)
+            self.pk_loss = PeakyLoss(scores_th=sc_th, radius=self.radius)
         if self.w_rp > 0:
-            self.rp_loss = ReprojectionLocLoss(norm=norm, scores_th=sc_th)
+            self.rp_loss = ReprojectionLocLoss(norm=norm, scores_th=sc_th, train_gt_th=self.train_gt_th)
+            self.rp_loss_old = ReprojectionLocLoss_old(norm=norm, scores_th=sc_th)
         if self.w_sp > 0:
             self.ScoreMapRepLoss = ScoreMapRepLoss(temperature=temp_sp)
+            self.ScoreMapRepLoss_old = ScoreMapRepLoss_old(temperature=temp_sp)
         if self.w_ds > 0:
             self.DescReprojectionLoss = DescReprojectionLoss(temperature=temp_ds)
+            self.DescReprojectionLoss_old = DescReprojectionLoss_old(temperature=temp_ds)
 
         # ================ evaluation ================
         lim = [1, 15]
@@ -123,6 +127,34 @@ class TrainWrapper(LETNetTrain):
         pred0 = super().extract_dense_map(batch[0]['image0'], True)
         pred1 = super().extract_dense_map(batch[0]['image1'], True)
 
+        # =================== detect keypoints ===================
+
+        kps0, scores0 = self.softdetect.detect_keypoints(pred0['scores_map'])
+        kps1, scores1 = self.softdetect.detect_keypoints(pred1['scores_map'])
+
+        # add random points
+        kps0, scores0 = self.add_random_kps(kps0, pred0['scores_map'])
+        kps1, scores1 = self.add_random_kps(kps1, pred1['scores_map'])
+
+        # warp parameters
+        warp01_params = {}
+        for k, v in batch[0]['warp01_params'].items():
+            warp01_params[k] = v[0]
+        warp10_params = {}
+        for k, v in batch[0]['warp10_params'].items():
+            warp10_params[k] = v[0]
+
+        # =================== compute descriptors ===================
+        desc0 = torch.nn.functional.grid_sample(pred0['descriptor_map'][0].unsqueeze(0), kps0[0].view(1, 1, -1, 2),
+                                                mode='bilinear', align_corners=True)[0, :, 0, :].t()
+        desc1 = torch.nn.functional.grid_sample(pred1['descriptor_map'][0].unsqueeze(0), kps1[0].view(1, 1, -1, 2),
+                                                mode='bilinear', align_corners=True)[0, :, 0, :].t()
+        desc0 = torch.nn.functional.normalize(desc0, p=2, dim=1)
+        desc1 = torch.nn.functional.normalize(desc1, p=2, dim=1)
+
+        similarity_map_01 = torch.einsum('nd,dhw->nhw', desc0, pred1['descriptor_map'][0])
+        similarity_map_10 = torch.einsum('nd,dhw->nhw', desc1, pred0['descriptor_map'][0])
+
         # ================ compute loss ================
 
         correspondences, pred0_with_rand, pred1_with_rand = self.compute_correspondence(pred0, pred1, batch[0])
@@ -131,27 +163,54 @@ class TrainWrapper(LETNetTrain):
         loss_package = {}
 
         if self.w_pk > 0:
-            loss_peaky0 = self.pk_loss(pred0_with_rand)
-            loss_peaky1 = self.pk_loss(pred1_with_rand)
+            # loss_peaky0_old = self.pk_loss_old(pred0_with_rand)
+            # loss_peaky1_old = self.pk_loss_old(pred1_with_rand)
+
+            loss_peaky0 = self.pk_loss(kps0, scores0, pred0['scores_map'])
+            loss_peaky1 = self.pk_loss(kps1, scores1, pred1['scores_map'])
+
+            # print("loss_peaky0_old: ", loss_peaky0_old)
+            # print("loss_peaky1_old: ", loss_peaky1_old)
+            # print("loss_peaky0: ", loss_peaky0)
+            # print("loss_peaky1: ", loss_peaky1)
+
             loss_peaky = (loss_peaky0 + loss_peaky1) / 2.
 
             loss += self.w_pk * loss_peaky
             loss_package['loss_peaky'] = loss_peaky
 
         if self.w_rp > 0:
-            loss_reprojection = self.rp_loss(pred0_with_rand, pred1_with_rand, correspondences)
+
+            loss_reprojection = self.rp_loss(kps0, scores0, pred0['scores_map'],
+                                             kps1, scores1, pred1['scores_map'],
+                                             warp01_params, warp10_params)
+
+            loss_reprojection_old = self.rp_loss_old(pred0_with_rand, pred1_with_rand, correspondences)
+
+            # print("loss_reprojection: ", loss_reprojection)
+            # print("loss_reprojection_old: ", loss_reprojection_old)
 
             loss += self.w_rp * loss_reprojection
             loss_package['loss_reprojection'] = loss_reprojection
 
         if self.w_sp > 0:
-            loss_score_map_rp = self.ScoreMapRepLoss(pred0_with_rand, pred1_with_rand, correspondences)
+            loss_score_map_rp = self.ScoreMapRepLoss(kps0, scores0, pred0['scores_map'], similarity_map_01,
+                                                     kps1, scores1, pred1['scores_map'], similarity_map_10,
+                                                     warp01_params, warp10_params)
+            loss_score_map_rp_old = self.ScoreMapRepLoss_old(pred0_with_rand, pred1_with_rand, correspondences)
+
+            # print("loss_score_map_rp: ", loss_score_map_rp)
+            # print("loss_score_map_rp_old: ", loss_score_map_rp_old)
 
             loss += self.w_sp * loss_score_map_rp
             loss_package['loss_score_map_rp'] = loss_score_map_rp
 
         if self.w_ds > 0:
-            loss_des = self.DescReprojectionLoss(pred0_with_rand, pred1_with_rand, correspondences)
+            loss_des = self.DescReprojectionLoss(kps0, pred0['scores_map'], similarity_map_01,
+                                                 kps1, pred1['scores_map'], similarity_map_10,
+                                                 warp01_params, warp10_params)
+
+            # loss_des_old = self.DescReprojectionLoss_old(pred0_with_rand, pred1_with_rand, correspondences)
 
             loss += self.w_ds * loss_des
             loss_package['loss_des'] = loss_des
@@ -234,7 +293,36 @@ class TrainWrapper(LETNetTrain):
             self.logger.experiment.add_image(f'{suffix}matches/{idx}', torch.tensor(match_image),
                                              global_step=self.global_step, dataformats='HWC')
 
-    def compute_correspondence(self, pred0, pred1, batch, rand=True):
+    def add_random_kps(self, kps, score_map):
+        b, c, h, w = score_map.shape
+        wh = score_map[0].new_tensor([[w - 1, h - 1]])
+        # add random points
+        rand = torch.rand(len(kps[0]), 2, device=kps[0].device) * 2 - 1  # -1~1
+        kps_add = torch.cat([kps[0], rand])
+        scores_kps = torch.nn.functional.grid_sample(score_map, kps_add.view(1, 1, -1, 2),
+                                                     mode='bilinear', align_corners=True).squeeze()
+        # nms for random points
+        kps_wh_ = (kps_add / 2 + 0.5) * wh  # N0x2, (w,h)
+        dist = compute_keypoints_distance(kps_wh_.detach(), kps_wh_.detach())
+        local_mask = dist < self.radius
+        valid_cnt = torch.sum(local_mask, dim=1)
+        indices_need_nms = torch.where(valid_cnt > 1)[0]
+        for i in indices_need_nms:
+            if valid_cnt[i] > 0:
+                kpt_indices = torch.where(local_mask[i])[0]
+                scs_max_idx = scores_kps[kpt_indices].argmax()
+
+                tmp_mask = kpt_indices.new_ones(len(kpt_indices)).bool()
+                tmp_mask[scs_max_idx] = False
+                suppressed_indices = kpt_indices[tmp_mask]
+
+                valid_cnt[suppressed_indices] = 0
+        valid_mask = valid_cnt > 0
+        kps_add = kps_add[valid_mask]
+        scores_kps = scores_kps[valid_mask]
+        return [kps_add], [scores_kps]
+
+    def compute_correspondence(self, pred0, pred1, batch, rand=False):
         b, c, h, w = pred0['scores_map'].shape
         wh = pred0['scores_map'][0].new_tensor([[w - 1, h - 1]])
 
@@ -254,11 +342,11 @@ class TrainWrapper(LETNetTrain):
         pred0_with_rand['num_det'] = []
         pred1_with_rand['num_det'] = []
 
-        kps, score_dispersity, scores = self.softdetect.detect_keypoints(pred0['scores_map'])
+        kps, score_dispersity, scores = self.softdetect.detect_keypoints_old(pred0['scores_map'])
         pred0_with_rand['keypoints'] = kps
         pred0_with_rand['score_dispersity'] = score_dispersity
 
-        kps, score_dispersity, scores = self.softdetect.detect_keypoints(pred1['scores_map'])
+        kps, score_dispersity, scores = self.softdetect.detect_keypoints_old(pred1['scores_map'])
         pred1_with_rand['keypoints'] = kps
         pred1_with_rand['score_dispersity'] = score_dispersity
 
