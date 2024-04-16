@@ -128,13 +128,13 @@ class TrainWrapper(LETNetTrain):
         pred1 = super().extract_dense_map(batch[0]['image1'], True)
 
         # =================== detect keypoints ===================
-
         kps0, scores0 = self.softdetect.detect_keypoints(pred0['scores_map'])
         kps1, scores1 = self.softdetect.detect_keypoints(pred1['scores_map'])
+        num_det0, num_det1 = len(kps0[0]), len(kps1[0])
 
         # add random points
-        kps0, scores0 = self.add_random_kps(kps0, pred0['scores_map'])
-        kps1, scores1 = self.add_random_kps(kps1, pred1['scores_map'])
+        kps0, scores0, num_det0 = self.add_random_kps(kps0, pred0['scores_map'])
+        kps1, scores1, num_det1 = self.add_random_kps(kps1, pred1['scores_map'])
 
         # warp parameters
         warp01_params = {}
@@ -157,22 +157,12 @@ class TrainWrapper(LETNetTrain):
 
         # ================ compute loss ================
 
-        correspondences, pred0_with_rand, pred1_with_rand = self.compute_correspondence(pred0, pred1, batch[0])
-
         loss = 0
         loss_package = {}
 
         if self.w_pk > 0:
-            # loss_peaky0_old = self.pk_loss_old(pred0_with_rand)
-            # loss_peaky1_old = self.pk_loss_old(pred1_with_rand)
-
             loss_peaky0 = self.pk_loss(kps0, scores0, pred0['scores_map'])
             loss_peaky1 = self.pk_loss(kps1, scores1, pred1['scores_map'])
-
-            # print("loss_peaky0_old: ", loss_peaky0_old)
-            # print("loss_peaky1_old: ", loss_peaky1_old)
-            # print("loss_peaky0: ", loss_peaky0)
-            # print("loss_peaky1: ", loss_peaky1)
 
             loss_peaky = (loss_peaky0 + loss_peaky1) / 2.
 
@@ -180,15 +170,9 @@ class TrainWrapper(LETNetTrain):
             loss_package['loss_peaky'] = loss_peaky
 
         if self.w_rp > 0:
-
             loss_reprojection = self.rp_loss(kps0, scores0, pred0['scores_map'],
                                              kps1, scores1, pred1['scores_map'],
                                              warp01_params, warp10_params)
-
-            loss_reprojection_old = self.rp_loss_old(pred0_with_rand, pred1_with_rand, correspondences)
-
-            # print("loss_reprojection: ", loss_reprojection)
-            # print("loss_reprojection_old: ", loss_reprojection_old)
 
             loss += self.w_rp * loss_reprojection
             loss_package['loss_reprojection'] = loss_reprojection
@@ -197,11 +181,6 @@ class TrainWrapper(LETNetTrain):
             loss_score_map_rp = self.ScoreMapRepLoss(kps0, scores0, pred0['scores_map'], similarity_map_01,
                                                      kps1, scores1, pred1['scores_map'], similarity_map_10,
                                                      warp01_params, warp10_params)
-            loss_score_map_rp_old = self.ScoreMapRepLoss_old(pred0_with_rand, pred1_with_rand, correspondences)
-
-            # print("loss_score_map_rp: ", loss_score_map_rp)
-            # print("loss_score_map_rp_old: ", loss_score_map_rp_old)
-
             loss += self.w_sp * loss_score_map_rp
             loss_package['loss_score_map_rp'] = loss_score_map_rp
 
@@ -209,8 +188,6 @@ class TrainWrapper(LETNetTrain):
             loss_des = self.DescReprojectionLoss(kps0, pred0['scores_map'], similarity_map_01,
                                                  kps1, pred1['scores_map'], similarity_map_10,
                                                  warp01_params, warp10_params)
-
-            # loss_des_old = self.DescReprojectionLoss_old(pred0_with_rand, pred1_with_rand, correspondences)
 
             loss += self.w_ds * loss_des
             loss_package['loss_des'] = loss_des
@@ -226,14 +203,12 @@ class TrainWrapper(LETNetTrain):
                 'desc0': [], 'desc1': []}
 
         for idx in range(b):
-            num_det0 = pred0_with_rand['num_det'][idx]
-            num_det1 = pred1_with_rand['num_det'][idx]
             pred['kpts0'].append(
-                (pred0_with_rand['keypoints'][idx][:num_det0] + 1) / 2 * num_det0.new_tensor([[w - 1, h - 1]]))
+                (kps0[idx][:num_det0] + 1) / 2 * num_det0.new_tensor([[w - 1, h - 1]]))
             pred['kpts1'].append(
-                (pred1_with_rand['keypoints'][idx][:num_det1] + 1) / 2 * num_det0.new_tensor([[w - 1, h - 1]]))
-            pred['desc0'].append(pred0_with_rand['descriptors'][idx][:num_det0])
-            pred['desc1'].append(pred1_with_rand['descriptors'][idx][:num_det1])
+                (kps1[idx][:num_det1] + 1) / 2 * num_det0.new_tensor([[w - 1, h - 1]]))
+            pred['desc0'].append(desc0[:num_det0])
+            pred['desc1'].append(desc1[:num_det1])
 
         accuracy = self.evaluate(pred, batch[0])
         self.log('train_acc', accuracy, prog_bar=True)
@@ -296,6 +271,7 @@ class TrainWrapper(LETNetTrain):
     def add_random_kps(self, kps, score_map):
         b, c, h, w = score_map.shape
         wh = score_map[0].new_tensor([[w - 1, h - 1]])
+        num = len(kps[0])
         # add random points
         rand = torch.rand(len(kps[0]), 2, device=kps[0].device) * 2 - 1  # -1~1
         kps_add = torch.cat([kps[0], rand])
@@ -320,220 +296,8 @@ class TrainWrapper(LETNetTrain):
         valid_mask = valid_cnt > 0
         kps_add = kps_add[valid_mask]
         scores_kps = scores_kps[valid_mask]
-        return [kps_add], [scores_kps]
-
-    def compute_correspondence(self, pred0, pred1, batch, rand=False):
-        b, c, h, w = pred0['scores_map'].shape
-        wh = pred0['scores_map'][0].new_tensor([[w - 1, h - 1]])
-
-        if self.debug:
-            from utils import display_image_in_actual_size
-            image0 = batch['image0'][0].permute(1, 2, 0).cpu().numpy()
-            image1 = batch['image1'][0].permute(1, 2, 0).cpu().numpy()
-            display_image_in_actual_size(image0)
-            display_image_in_actual_size(image1)
-
-        pred0_with_rand = pred0
-        pred1_with_rand = pred1
-        pred0_with_rand['scores'] = []
-        pred1_with_rand['scores'] = []
-        pred0_with_rand['descriptors'] = []
-        pred1_with_rand['descriptors'] = []
-        pred0_with_rand['num_det'] = []
-        pred1_with_rand['num_det'] = []
-
-        kps, score_dispersity, scores = self.softdetect.detect_keypoints_old(pred0['scores_map'])
-        pred0_with_rand['keypoints'] = kps
-        pred0_with_rand['score_dispersity'] = score_dispersity
-
-        kps, score_dispersity, scores = self.softdetect.detect_keypoints_old(pred1['scores_map'])
-        pred1_with_rand['keypoints'] = kps
-        pred1_with_rand['score_dispersity'] = score_dispersity
-
-        correspondences = []
-        for idx in range(b):
-            # =========================== prepare keypoints
-            kpts0, kpts1 = pred0['keypoints'][idx], pred1['keypoints'][idx]  # (x,y), shape: Nx2
-
-            # additional random keypoints
-            if rand:
-                rand0 = torch.rand(len(kpts0), 2, device=kpts0.device) * 2 - 1  # -1~1
-                rand1 = torch.rand(len(kpts1), 2, device=kpts1.device) * 2 - 1  # -1~1
-                kpts0 = torch.cat([kpts0, rand0])
-                kpts1 = torch.cat([kpts1, rand1])
-
-                pred0_with_rand['keypoints'][idx] = kpts0
-                pred1_with_rand['keypoints'][idx] = kpts1
-
-            scores_map0 = pred0['scores_map'][idx]
-            scores_map1 = pred1['scores_map'][idx]
-            scores_kpts0 = torch.nn.functional.grid_sample(scores_map0.unsqueeze(0), kpts0.view(1, 1, -1, 2),
-                                                           mode='bilinear', align_corners=True).squeeze()
-            scores_kpts1 = torch.nn.functional.grid_sample(scores_map1.unsqueeze(0), kpts1.view(1, 1, -1, 2),
-                                                           mode='bilinear', align_corners=True).squeeze()
-
-            kpts0_wh_ = (kpts0 / 2 + 0.5) * wh  # N0x2, (w,h)
-            kpts1_wh_ = (kpts1 / 2 + 0.5) * wh  # N1x2, (w,h)
-
-            # ========================= nms
-            dist = compute_keypoints_distance(kpts0_wh_.detach(), kpts0_wh_.detach())
-            local_mask = dist < self.radius
-            valid_cnt = torch.sum(local_mask, dim=1)
-            indices_need_nms = torch.where(valid_cnt > 1)[0]
-            for i in indices_need_nms:
-                if valid_cnt[i] > 0:
-                    kpt_indices = torch.where(local_mask[i])[0]
-                    scs_max_idx = scores_kpts0[kpt_indices].argmax()
-
-                    tmp_mask = kpt_indices.new_ones(len(kpt_indices)).bool()
-                    tmp_mask[scs_max_idx] = False
-                    suppressed_indices = kpt_indices[tmp_mask]
-
-                    valid_cnt[suppressed_indices] = 0
-            valid_mask = valid_cnt > 0
-            kpts0_wh = kpts0_wh_[valid_mask]
-            kpts0 = kpts0[valid_mask]
-            scores_kpts0 = scores_kpts0[valid_mask]
-            pred0_with_rand['keypoints'][idx] = kpts0
-
-            valid_mask = valid_mask[:len(pred0_with_rand['score_dispersity'][idx])]
-            pred0_with_rand['score_dispersity'][idx] = pred0_with_rand['score_dispersity'][idx][valid_mask]
-            pred0_with_rand['num_det'].append(valid_mask.sum())
-
-            dist = compute_keypoints_distance(kpts1_wh_.detach(), kpts1_wh_.detach())
-            local_mask = dist < self.radius
-            valid_cnt = torch.sum(local_mask, dim=1)
-            indices_need_nms = torch.where(valid_cnt > 1)[0]
-            for i in indices_need_nms:
-                if valid_cnt[i] > 0:
-                    kpt_indices = torch.where(local_mask[i])[0]
-                    scs_max_idx = scores_kpts1[kpt_indices].argmax()
-
-                    tmp_mask = kpt_indices.new_ones(len(kpt_indices)).bool()
-                    tmp_mask[scs_max_idx] = False
-                    suppressed_indices = kpt_indices[tmp_mask]
-
-                    valid_cnt[suppressed_indices] = 0
-            valid_mask = valid_cnt > 0
-            kpts1_wh = kpts1_wh_[valid_mask]
-            kpts1 = kpts1[valid_mask]
-            scores_kpts1 = scores_kpts1[valid_mask]
-            pred1_with_rand['keypoints'][idx] = kpts1
-
-            valid_mask = valid_mask[:len(pred1_with_rand['score_dispersity'][idx])]
-            pred1_with_rand['score_dispersity'][idx] = pred1_with_rand['score_dispersity'][idx][valid_mask]
-            pred1_with_rand['num_det'].append(valid_mask.sum())
-
-            # del dist, local_mask, valid_cnt, indices_need_nms, scs_max_idx, tmp_mask, suppressed_indices, valid_mask
-            # torch.cuda.empty_cache()
-            # ========================= nms
-
-            pred0_with_rand['scores'].append(scores_kpts0)
-            pred1_with_rand['scores'].append(scores_kpts1)
-            descriptor_map0, descriptor_map1 = pred0['descriptor_map'][idx], pred1['descriptor_map'][idx]
-            desc0 = torch.nn.functional.grid_sample(descriptor_map0.unsqueeze(0), kpts0.view(1, 1, -1, 2),
-                                                    mode='bilinear', align_corners=True)[0, :, 0, :].t()
-            desc1 = torch.nn.functional.grid_sample(descriptor_map1.unsqueeze(0), kpts1.view(1, 1, -1, 2),
-                                                    mode='bilinear', align_corners=True)[0, :, 0, :].t()
-            desc0 = torch.nn.functional.normalize(desc0, p=2, dim=1)
-            desc1 = torch.nn.functional.normalize(desc1, p=2, dim=1)
-
-            pred0_with_rand['descriptors'].append(desc0)
-            pred1_with_rand['descriptors'].append(desc1)
-
-            # =========================== prepare warp parameters
-            warp01_params = {}
-            for k, v in batch['warp01_params'].items():
-                warp01_params[k] = v[idx]
-            warp10_params = {}
-            for k, v in batch['warp10_params'].items():
-                warp10_params[k] = v[idx]
-
-            # =========================== warp keypoints across images
-            try:
-                # valid keypoint, valid warped keypoint, valid indices
-                kpts0_wh, kpts01_wh, ids0, ids0_out = warp(kpts0_wh, warp01_params)
-                kpts1_wh, kpts10_wh, ids1, ids1_out = warp(kpts1_wh, warp10_params)
-                if len(kpts0_wh) == 0 or len(kpts1_wh) == 0 or len(kpts0) == 0 or len(kpts1) == 0:
-                    raise EmptyTensorError
-            except EmptyTensorError:
-                correspondences.append({'correspondence0': None, 'correspondence1': None,
-                                        'dist': kpts0_wh.new_tensor(0),
-                                        })
-                continue
-
-            if self.debug:
-                from utils import display_image_in_actual_size
-                image0 = batch['image0'][0].permute(1, 2, 0).cpu().numpy()
-                image1 = batch['image1'][0].permute(1, 2, 0).cpu().numpy()
-
-                p0 = kpts0_wh[:, [1, 0]].cpu().detach().numpy()
-                img_kpts0 = plot_keypoints(image0, p0, radius=1, color=(255, 0, 0))
-                # display_image_in_actual_size(img_kpts0)
-
-                p1 = kpts1_wh[:, [1, 0]].cpu().detach().numpy()
-                img_kpts1 = plot_keypoints(image1, p1, radius=1, color=(255, 0, 0))
-                # display_image_in_actual_size(img_kpts1)
-
-                p01 = kpts01_wh[:, [1, 0]].cpu().detach().numpy()
-                img_kpts01 = plot_keypoints(img_kpts1, p01, radius=1, color=(0, 255, 0))
-                display_image_in_actual_size(img_kpts01)
-
-                p10 = kpts10_wh[:, [1, 0]].cpu().detach().numpy()
-                img_kpts10 = plot_keypoints(img_kpts0, p10, radius=1, color=(0, 255, 0))
-                display_image_in_actual_size(img_kpts10)
-
-            # ============================= compute reprojection error
-            dist01 = compute_keypoints_distance(kpts0_wh, kpts10_wh)
-            dist10 = compute_keypoints_distance(kpts1_wh, kpts01_wh)
-
-            dist_l2 = (dist01 + dist10.t()) / 2.
-            # find mutual correspondences by calculating the distance
-            # between keypoints (I1) and warpped keypoints (I2->I1)
-            mutual_min_indices = mutual_argmin(dist_l2)
-
-            dist_mutual_min = dist_l2[mutual_min_indices]
-            valid_dist_mutual_min = dist_mutual_min.detach() < self.train_gt_th
-
-            ids0_d = mutual_min_indices[0][valid_dist_mutual_min]
-            ids1_d = mutual_min_indices[1][valid_dist_mutual_min]
-
-            correspondence0 = ids0[ids0_d]
-            correspondence1 = ids1[ids1_d]
-
-            # L1 distance
-            dist01_l1 = compute_keypoints_distance(kpts0_wh, kpts10_wh, p=1)
-            dist10_l1 = compute_keypoints_distance(kpts1_wh, kpts01_wh, p=1)
-
-            dist_l1 = (dist01_l1 + dist10_l1.t()) / 2.
-
-            # =========================== compute cross image descriptor similarity_map
-            similarity_map_01 = torch.einsum('nd,dhw->nhw', desc0, descriptor_map1)
-            similarity_map_10 = torch.einsum('nd,dhw->nhw', desc1, descriptor_map0)
-
-            similarity_map_01_valid = similarity_map_01[ids0]  # valid descriptors
-            similarity_map_10_valid = similarity_map_10[ids1]
-
-            kpts01 = 2 * kpts01_wh.detach() / wh - 1  # N0x2, (x,y), [-1,1]
-            kpts10 = 2 * kpts10_wh.detach() / wh - 1  # N0x2, (x,y), [-1,1]
-
-            correspondences.append({'correspondence0': correspondence0,  # indices of matched kpts0 in all kpts
-                                    'correspondence1': correspondence1,  # indices of matched kpts1 in all kpts
-                                    'scores0': scores_kpts0[ids0],
-                                    'scores1': scores_kpts1[ids1],
-                                    'kpts01': kpts01, 'kpts10': kpts10,  # warped valid kpts
-                                    'ids0': ids0, 'ids1': ids1,  # valid indices of kpts0 and kpts1
-                                    'ids0_out': ids0_out, 'ids1_out': ids1_out,
-                                    'ids0_d': ids0_d, 'ids1_d': ids1_d,  # match indices of valid kpts0 and kpts1
-                                    'dist_l1': dist_l1,  # cross distance matrix of valid kpts using L1 norm
-                                    'dist': dist_l2,  # cross distance matrix of valid kpts using L2 norm
-                                    'similarity_map_01': similarity_map_01,  # all
-                                    'similarity_map_10': similarity_map_10,  # all
-                                    'similarity_map_01_valid': similarity_map_01_valid,  # valid
-                                    'similarity_map_10_valid': similarity_map_10_valid,  # valid
-                                    })
-
-        return correspondences, pred0_with_rand, pred1_with_rand
+        valid_mask = valid_mask[:num]
+        return [kps_add], [scores_kps], valid_mask.sum()
 
     def evaluate(self, pred, batch):
         b = len(pred['kpts0'])
