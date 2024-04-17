@@ -30,7 +30,7 @@ class TrainWrapper(LETNetTrain):
                  # gt projection params
                  train_gt_th: int = 5, eval_gt_th: int = 3,
                  # loss weights
-                 w_pk: float = 1.0, w_rp: float = 1.0, w_sp: float = 1.0, w_ds: float = 1.0,
+                 w_pk: float = 1.0, w_rp: float = 1.0, w_sp: float = 1.0, w_ds: float = 1.0, w_mds: float = 1.0,
                  sc_th: float = 0.1, norm: int = 1, temp_sp: float = 0.1, temp_ds: float = 0.02,
                  # training params
                  lr: float = 1e-3, log_freq_img: int = 1000,
@@ -48,6 +48,7 @@ class TrainWrapper(LETNetTrain):
         self.w_rp = w_rp
         self.w_sp = w_sp
         self.w_ds = w_ds
+        self.w_mds = w_mds
 
         self.train_gt_th = train_gt_th
         self.eval_gt_th = eval_gt_th
@@ -155,6 +156,16 @@ class TrainWrapper(LETNetTrain):
         similarity_map_01 = torch.einsum('nd,dhw->nhw', desc0, pred1['descriptor_map'][0])
         similarity_map_10 = torch.einsum('nd,dhw->nhw', desc1, pred0['descriptor_map'][0])
 
+        l_desc0 = torch.nn.functional.grid_sample(pred0['local_desc'][0].unsqueeze(0), kps0[0].view(1, 1, -1, 2),
+                                                  mode='bilinear', align_corners=True)[0, :, 0, :].t()
+        l_desc1 = torch.nn.functional.grid_sample(pred1['local_desc'][0].unsqueeze(0), kps1[0].view(1, 1, -1, 2),
+                                                  mode='bilinear', align_corners=True)[0, :, 0, :].t()
+        l_desc0 = torch.nn.functional.normalize(l_desc0, p=2, dim=1)
+        l_desc1 = torch.nn.functional.normalize(l_desc1, p=2, dim=1)
+
+        m_similarity_map_01 = torch.einsum('nd,dhw->nhw', l_desc0, pred1['local_desc'][0])
+        m_similarity_map_10 = torch.einsum('nd,dhw->nhw', l_desc1, pred0['local_desc'][0])
+
         # ================ compute loss ================
 
         loss = 0
@@ -192,6 +203,13 @@ class TrainWrapper(LETNetTrain):
             loss += self.w_ds * loss_des
             loss_package['loss_des'] = loss_des
 
+        if self.w_mds > 0:
+            loss_mdes = self.DescReprojectionLoss(kps0, pred0['scores_map'], m_similarity_map_01,
+                                                  kps1, pred1['scores_map'], m_similarity_map_10,
+                                                  warp01_params, warp10_params)
+            loss += self.w_mds * loss_mdes
+            loss_package['loss_mdes'] = loss_mdes
+
         self.log('train/loss', loss)
         for k, v in loss_package.items():
             if 'loss' in k:
@@ -200,7 +218,8 @@ class TrainWrapper(LETNetTrain):
         pred = {'scores_map0': pred0['scores_map'],
                 'scores_map1': pred1['scores_map'],
                 'kpts0': [], 'kpts1': [],
-                'desc0': [], 'desc1': []}
+                'desc0': [], 'desc1': [],
+                'local_desc': []}
 
         for idx in range(b):
             pred['kpts0'].append(
@@ -209,6 +228,7 @@ class TrainWrapper(LETNetTrain):
                 (kps1[idx][:num_det1] + 1) / 2 * num_det0.new_tensor([[w - 1, h - 1]]))
             pred['desc0'].append(desc0[:num_det0])
             pred['desc1'].append(desc1[:num_det1])
+            pred['local_desc'] = [pred0['local_desc'], pred1['local_desc']]
 
         accuracy = self.evaluate(pred, batch[0])
         self.log('train_acc', accuracy, prog_bar=True)
@@ -237,6 +257,9 @@ class TrainWrapper(LETNetTrain):
             image1 = (batch['image1'][idx] * 255).to(torch.uint8).cpu().permute(1, 2, 0)
             scores0 = (pred['scores_map0'][idx].detach() * 255).to(torch.uint8).cpu().squeeze().numpy()
             scores1 = (pred['scores_map1'][idx].detach() * 255).to(torch.uint8).cpu().squeeze().numpy()
+            l_desc0 = (pred['local_desc'][0][idx].detach() * 255).to(torch.uint8).cpu().squeeze().numpy()
+            l_desc1 = (pred['local_desc'][1][idx].detach() * 255).to(torch.uint8).cpu().squeeze().numpy()
+
             kpts0, kpts1 = pred['kpts0'][idx][:self.top_k].detach(), pred['kpts1'][idx][:self.top_k].detach()
 
             # =================== score map
@@ -267,6 +290,11 @@ class TrainWrapper(LETNetTrain):
             match_image = plot_matches(image0, image1, mkpts0, mkpts1)
             self.logger.experiment.add_image(f'{suffix}matches/{idx}', torch.tensor(match_image),
                                              global_step=self.global_step, dataformats='HWC')
+            # =================== local descriptors
+            self.logger.experiment.add_image(f'{suffix}local_desc/{idx}_src', torch.tensor(l_desc0),
+                                             global_step=self.global_step, dataformats='CHW')
+            self.logger.experiment.add_image(f'{suffix}local_desc/{idx}_tgt', torch.tensor(l_desc1),
+                                             global_step=self.global_step, dataformats='CHW')
 
     def add_random_kps(self, kps, score_map):
         b, c, h, w = score_map.shape

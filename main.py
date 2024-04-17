@@ -58,6 +58,7 @@ if __name__ == '__main__':
     w_rp = 1
     w_sp = 1
     w_ds = 5
+    w_mds = 1
     sc_th = 0.1
     norm = 1
     temp_sp = 0.1
@@ -149,7 +150,7 @@ if __name__ == '__main__':
         radius=radius, top_k=top_k, scores_th=0, n_limit=0,
         scores_th_eval=scores_th_eval, n_limit_eval=n_limit_eval,
         train_gt_th=train_gt_th, eval_gt_th=eval_gt_th,
-        w_pk=w_pk, w_rp=w_rp, w_sp=w_sp, w_ds=w_ds,
+        w_pk=w_pk, w_rp=w_rp, w_sp=w_sp, w_ds=w_ds, w_mds=w_mds,
         sc_th=sc_th, norm=norm, temp_sp=temp_sp, temp_ds=temp_ds,
         lr=3e-4, log_freq_img=log_freq_img,
         pretrained_model=pretrained_model,
