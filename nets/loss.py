@@ -58,6 +58,78 @@ class PeakyLoss(object):
         return loss_mean
 
 
+class LinePeakyLoss(object):
+    """ PeakyLoss to avoid an uniform score map """
+
+    def __init__(self, scores_th: float = 0.1, radius: int = 2):
+        super().__init__()
+        self.scores_th = scores_th
+        self.radius = radius
+        self.temperature = 0.1
+        # local xy grid
+        self.kernel_size = 2 * self.radius + 1
+        x = torch.linspace(-self.radius, self.radius, self.kernel_size)
+        # (kernel_size*kernel_size) x 2 : (w,h)
+        self.hw_grid = torch.stack(torch.meshgrid([x, x])).view(2, -1).t()[:, [1, 0]]
+        self.unfold = torch.nn.Unfold(kernel_size=self.kernel_size, padding=self.radius)
+
+    def __call__(self, kps, scores, score_map):
+        b, c, h, w = score_map.shape
+        loss_mean = 0
+        CNT = 0
+        score_dispersitys = []
+
+        self.hw_grid = self.hw_grid.to(score_map)  # to device
+        patches = self.unfold(score_map)  # B x (kernel**2) x (H*W)
+
+        for idx in range(b):
+            M = len(kps[idx])
+            K = self.kernel_size
+            K2 = K ** 2
+            xy_int = kps[idx].int()  # M x 2
+            xy_residual = kps[idx] - xy_int  # M x 2
+            hw_grid_dist2 = torch.norm((self.hw_grid[None, :, :] - xy_residual[:, None, :]) / self.radius,
+                                       dim=-1) ** 2
+            a = torch.linspace(-self.radius, self.radius, self.kernel_size).cuda()
+            mask_x = torch.exp(-(a.view(1, K) - xy_residual[:, 0].view(M, 1)) * (a - xy_residual[:, 0].view(M, 1)))
+            mask_x = torch.stack((mask_x, mask_x, mask_x, mask_x, mask_x), 1).view(M, K2)
+            mask_y = torch.exp(-(a.view(1, K) - xy_residual[:, 1].view(M, 1)) * (a - xy_residual[:, 1].view(M, 1)))
+            mask_y = torch.stack((mask_y, mask_y, mask_y, mask_y, mask_y), 2).view(M, K2)
+
+            a = (self.hw_grid[None, :, :] - xy_residual[:, None, :])
+            mask_xy = torch.exp(-torch.abs(a.sum(dim=2) * 0.525))
+            mask_yx = torch.exp(-torch.abs((a[:, :, 0] - a[:, :, 1]) * 0.525))
+
+            indices_kpt = xy_int[:, 1] * w + xy_int[:, 0]  # M
+            patch = patches[idx].t()  # (H*W) x (kernel**2)
+            patch_scores = patch[indices_kpt]  # M x (kernel**2)
+            # max is detached to prevent undesired backprop loops in the graph
+            max_v = patch_scores.max(dim=1).values.detach()[:, None]
+            x_exp = ((patch_scores - max_v) / self.temperature).exp()  # M * (kernel**2), in [0, 1]
+
+            # \frac{ \sum{(i,j) \times \exp(x/T)} }{ \sum{\exp(x/T)} }
+            scoredispersity_x = (mask_x * x_exp * hw_grid_dist2).sum(dim=1) / x_exp.sum(dim=1)
+            scoredispersity_y = (mask_y * x_exp * hw_grid_dist2).sum(dim=1) / x_exp.sum(dim=1)
+            scoredispersity_xy = (mask_xy * x_exp * hw_grid_dist2).sum(dim=1) / x_exp.sum(dim=1)
+            scoredispersity_yx = (mask_yx * x_exp * hw_grid_dist2).sum(dim=1) / x_exp.sum(dim=1)
+
+            dispersity = torch.stack([scoredispersity_x, scoredispersity_y, scoredispersity_xy, scoredispersity_yx], 1)
+            dispersity, i = dispersity.max(dim=1)
+            score_dispersitys.append(dispersity)
+
+        n_original = len(score_dispersitys[0])
+        for idx in range(b):
+            scores_kpts = scores[idx][:n_original]
+            valid = scores_kpts > self.scores_th
+            loss_peaky = score_dispersitys[idx][valid]
+            loss_mean = loss_mean + loss_peaky.sum()
+            CNT = CNT + len(loss_peaky)
+
+        loss_mean = loss_mean / CNT if CNT != 0 else score_map.new_tensor(0)
+        assert not torch.isnan(loss_mean)
+        return loss_mean
+
+
 class ReprojectionLocLoss(object):
     """
     Reprojection location errors of keypoints to train repeatable detector.

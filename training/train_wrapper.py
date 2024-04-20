@@ -86,7 +86,8 @@ class TrainWrapper(LETNetTrain):
         # ================ losses ================
 
         if self.w_pk > 0:
-            self.pk_loss = PeakyLoss(scores_th=sc_th, radius=self.radius)
+            # self.pk_loss = PeakyLoss(scores_th=sc_th, radius=self.radius)
+            self.pk_loss = LinePeakyLoss(scores_th=sc_th, radius=self.radius)
         if self.w_rp > 0:
             self.rp_loss = ReprojectionLocLoss(norm=norm, scores_th=sc_th, train_gt_th=self.train_gt_th)
         if self.w_sp > 0:
