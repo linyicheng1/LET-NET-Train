@@ -126,7 +126,10 @@ class LETNetTrain(BaseNet):
     def __init__(self, c1: int = 32, c2: int = 64, c3: int = 128, c4: int = 128, dim: int = 128,
                  grayscale: bool = False):
         super().__init__()
-        self.let_net = LETNet(c1, dim // 4, grayscale)
+        self.let_net = LETNet(c1, c2, grayscale)
+        # w = torch.load('./weight/letnet.pth')
+        # self.let_net.load_state_dict(w)
+
         self.gray = grayscale
         self.gate = nn.ReLU(inplace=True)
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
@@ -224,9 +227,18 @@ class LETNetTrain(BaseNet):
 
 
 if __name__ == '__main__':
-    net = LETNetTrain()
+    # net = LETNetTrain()
+    # x = torch.rand(1, 3, 640, 640)
+    # scores_map, local_descriptor, descriptor_map = net(x)
+    # print(scores_map.shape, local_descriptor.shape, descriptor_map.shape)
+    # print(net)
+
+    net = LETNet(c1=8, c2=16, grayscale=False)
+    weight = torch.load('../weight/letnet.pth')
+    net.load_state_dict(weight)
     x = torch.rand(1, 3, 640, 640)
-    scores_map, local_descriptor, descriptor_map = net(x)
-    print(scores_map.shape, local_descriptor.shape, descriptor_map.shape)
+    scores_map, local_descriptor = net(x)
+    print(scores_map.shape, local_descriptor.shape)
     print(net)
+
 

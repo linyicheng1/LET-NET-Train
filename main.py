@@ -62,7 +62,7 @@ if __name__ == '__main__':
     sc_th = 0.1
     norm = 1
     temp_sp = 0.1
-    temp_ds = 0.1
+    temp_ds = 0.02
 
     gpus = [0]
     warmup_steps = 500
