@@ -1,6 +1,6 @@
 # LET-NET Training Code 
 
-This is the training code for the paper **Breaking of brightness consistency in optical flow with a lightweight CNN network**. The new release has a cleaner and clearer code and is fully tested and validated.
+This is the training code for the paper **Breaking of brightness consistency in optical flow with a lightweight CNN network**. The new release has a simpler and clearer code that has been fully tested and validated. 
 
 ## TODO List 
 
