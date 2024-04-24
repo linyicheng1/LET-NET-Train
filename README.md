@@ -5,6 +5,7 @@ This is the training code for the paper **Breaking of brightness consistency in 
 ## TODO List 
 
 - Realease the final pretrained model of color and grayscale version.
+- Add an introduction to the loss function in Wiki
 - Add new key points, **Learned Good Features to Track**
 
 ## Requirements
