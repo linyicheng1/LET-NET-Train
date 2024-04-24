@@ -94,6 +94,8 @@ class TrainWrapper(LETNetTrain):
             self.ScoreMapRepLoss = ScoreMapRepLoss(temperature=temp_sp)
         if self.w_ds > 0:
             self.DescReprojectionLoss = DescReprojectionLoss(temperature=temp_ds)
+        if self.w_mds > 0:
+            self.LocalDescLoss = LocalDescLoss(temperature=temp_ds, window_size=80)
 
         # ================ evaluation ================
         lim = [1, 15]
@@ -200,9 +202,9 @@ class TrainWrapper(LETNetTrain):
             loss_package['loss_des'] = loss_des
 
         if self.w_mds > 0:
-            loss_mdes = self.DescReprojectionLoss(kps0, pred0['scores_map'], m_similarity_map_01,
-                                                  kps1, pred1['scores_map'], m_similarity_map_10,
-                                                  warp01_params, warp10_params)
+            loss_mdes = self.LocalDescLoss(kps0, pred0['scores_map'], m_similarity_map_01,
+                                           kps1, pred1['scores_map'], m_similarity_map_10,
+                                           warp01_params, warp10_params)
             loss += self.w_mds * loss_mdes
             loss_package['loss_mdes'] = loss_mdes
 

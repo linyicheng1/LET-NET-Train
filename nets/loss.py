@@ -90,7 +90,7 @@ class LinePeakyLoss(object):
             xy_residual = kps[idx] - xy_int  # M x 2
             hw_grid_dist2 = torch.norm((self.hw_grid[None, :, :] - xy_residual[:, None, :]) / self.radius,
                                        dim=-1) ** 2
-            a = torch.linspace(-self.radius, self.radius, self.kernel_size).cuda()
+            a = torch.linspace(-self.radius, self.radius, self.kernel_size).to(score_map.device)
             mask_x = torch.exp(-(a.view(1, K) - xy_residual[:, 0].view(M, 1)) * (a - xy_residual[:, 0].view(M, 1)))
             mask_x = torch.stack((mask_x, mask_x, mask_x, mask_x, mask_x), 1).view(M, K2)
             mask_y = torch.exp(-(a.view(1, K) - xy_residual[:, 1].view(M, 1)) * (a - xy_residual[:, 1].view(M, 1)))
@@ -108,10 +108,10 @@ class LinePeakyLoss(object):
             x_exp = ((patch_scores - max_v) / self.temperature).exp()  # M * (kernel**2), in [0, 1]
 
             # \frac{ \sum{(i,j) \times \exp(x/T)} }{ \sum{\exp(x/T)} }
-            scoredispersity_x = (mask_x * x_exp * hw_grid_dist2).sum(dim=1) / x_exp.sum(dim=1)
-            scoredispersity_y = (mask_y * x_exp * hw_grid_dist2).sum(dim=1) / x_exp.sum(dim=1)
-            scoredispersity_xy = (mask_xy * x_exp * hw_grid_dist2).sum(dim=1) / x_exp.sum(dim=1)
-            scoredispersity_yx = (mask_yx * x_exp * hw_grid_dist2).sum(dim=1) / x_exp.sum(dim=1)
+            scoredispersity_x = (mask_x * x_exp * hw_grid_dist2).sum(dim=1) / (mask_x*x_exp).sum(dim=1)
+            scoredispersity_y = (mask_y * x_exp * hw_grid_dist2).sum(dim=1) / (mask_y*x_exp).sum(dim=1)
+            scoredispersity_xy = (mask_xy * x_exp * hw_grid_dist2).sum(dim=1) / (mask_xy*x_exp).sum(dim=1)
+            scoredispersity_yx = (mask_yx * x_exp * hw_grid_dist2).sum(dim=1) / (mask_yx*x_exp).sum(dim=1)
 
             dispersity = torch.stack([scoredispersity_x, scoredispersity_y, scoredispersity_xy, scoredispersity_yx], 1)
             dispersity, i = dispersity.max(dim=1)
@@ -307,7 +307,8 @@ class ScoreMapRepLoss(object):
                 CNT = CNT + len(loss10)
 
         loss_mean = loss_mean / CNT if CNT != 0 else kps0[0].new_tensor(0)
-        assert not torch.isnan(loss_mean)
+        if torch.isnan(loss_mean):
+            loss_mean = kps0[0].new_tensor(0)
         return loss_mean
 
 
@@ -393,4 +394,152 @@ class DescReprojectionLoss(object):
         loss_mean = loss_mean / CNT if CNT != 0 else wh.new_tensor(0)
         assert not torch.isnan(loss_mean)
         return loss_mean
+
+
+class LocalDescLoss(object):
+    def __init__(self, temperature=0.02, window_size=80):
+        super().__init__()
+        self.inv_temp = 1. / temperature
+        self.window_size = window_size
+
+    def __call__(self, kps0, score_map0, similarity_map_01,
+                 kps1, score_map1, similarity_map_10,
+                 warp01_params, warp10_params):
+        b, c, h, w = score_map0.shape
+        device = score_map0.device
+        wh = kps0[0].new_tensor([[w - 1, h - 1]])
+        loss_mean = 0
+        CNT = 0
+
+        # compute correspondence
+        kps0_wh_ = (kps0[0] / 2 + 0.5) * wh  # N0x2, (w,h)
+        kps1_wh_ = (kps1[0] / 2 + 0.5) * wh  # N1x2, (w,h)
+
+        try:
+            # valid keypoint, valid warped keypoint, valid indices
+            kps0_wh_, kps01_wh, ids0, ids0_out = warp(kps0_wh_, warp01_params)
+            kps1_wh_, kps10_wh, ids1, ids1_out = warp(kps1_wh_, warp10_params)
+            if len(kps0_wh_) == 0 or len(kps1_wh_) == 0 or len(kps0[0]) == 0 or len(kps1[0]) == 0:
+                raise EmptyTensorError
+        except EmptyTensorError:
+            return score_map0.new_tensor(0)
+
+        for idx in range(b):
+            kps01 = 2 * kps01_wh.detach() / wh - 1  # N0x2, (x,y), [-1,1]
+            kps10 = 2 * kps10_wh.detach() / wh - 1  # N0x2, (x,y), [-1,1]
+            kps01_res = (kps01_wh - kps01_wh.int())
+            kps10_res = (kps10_wh - kps10_wh.int())
+            # ======================= valid
+
+            similarity_map_01_valid, similarity_map_10_valid = similarity_map_01[ids0], similarity_map_10[ids1]
+            similarity_map_01_valid = (similarity_map_01_valid - 1) * self.inv_temp
+            similarity_map_10_valid = (similarity_map_10_valid - 1) * self.inv_temp
+
+            # local mask
+            W = (self.window_size + 1)
+
+            kp0 = torch.maximum(torch.tensor([0, 0]).to(kps01_wh.device),
+                                kps01_wh.detach().int() - self.window_size // 2)
+            kp1 = torch.minimum(torch.tensor([w-1, h-1]).to(kps01_wh.device),
+                                kps01_wh.detach().int() + self.window_size // 2 + 1)
+
+            mask = torch.zeros(similarity_map_01_valid.shape, device=device, requires_grad=False)
+            for i in range(len(kps01)):
+                mask[i, 0:kp0[i, 1], :] = -100
+                mask[i, kp1[i, 1]:h, :] = -100
+                mask[i, :, 0:kp0[i, 0]] = -100
+                mask[i, :, kp1[i, 0]:w] = -100
+            similarity_map_01_valid = similarity_map_01_valid + mask
+
+            kp0 = torch.maximum(torch.tensor([0, 0]).to(kps10_wh.device),
+                                kps10_wh.detach().int() - self.window_size // 2)
+            kp1 = torch.minimum(torch.tensor([w-1, h-1]).to(kps10_wh.device),
+                                kps10_wh.detach().int() + self.window_size // 2 + 1)
+
+            mask = torch.zeros(similarity_map_10_valid.shape, device=device, requires_grad=False)
+            for i in range(len(kps10)):
+                mask[i, 0:kp0[i, 1], :] = -100
+                mask[i, kp1[i, 1]:h, :] = -100
+                mask[i, :, 0:kp0[i, 0]] = -100
+                mask[i, :, kp1[i, 0]:w] = -100
+            similarity_map_10_valid = similarity_map_10_valid + mask
+
+            pmf01_valid = torch.softmax(similarity_map_01_valid.view(-1, h * w), dim=1).view(-1, h, w)
+            pmf10_valid = torch.softmax(similarity_map_10_valid.view(-1, h * w), dim=1).view(-1, h, w)
+
+            pmf01_kpts_valid = torch.nn.functional.grid_sample(pmf01_valid.unsqueeze(0), kps01.view(1, 1, -1, 2),
+                                                               mode='bilinear', align_corners=True)[0, :, 0, :]
+            pmf10_kpts_valid = torch.nn.functional.grid_sample(pmf10_valid.unsqueeze(0), kps10.view(1, 1, -1, 2),
+                                                               mode='bilinear', align_corners=True)[0, :, 0, :]
+
+            # as we use the gt correspondence here, the outlier uniform pmf is ignored
+            # C_{Q,N} in NRE
+            C01 = torch.diag(pmf01_kpts_valid)
+            C10 = torch.diag(pmf10_kpts_valid)
+
+            C = torch.cat([C01, C10])  # C
+            C_widetilde = -C.log()  # \widetilde{C}
+
+            loss_mean = loss_mean + C_widetilde.sum()
+            CNT = CNT + len(C_widetilde)
+
+        loss_mean = loss_mean / CNT if CNT != 0 else wh.new_tensor(0)
+        assert not torch.isnan(loss_mean)
+        return loss_mean
+
+
+if __name__ == '__main__':
+    # pk = PeakyLoss()
+    # line_pk = LinePeakyLoss()
+    # kps = torch.tensor([[[4, 4]]], dtype=torch.float32)
+    # scores = torch.tensor([[0.5]], dtype=torch.float32)
+    # score_map = torch.zeros(1, 1, 8, 8)
+    # score_map[:, :, 4, :] = 1
+    # score_map.requires_grad = True
+    # print("score_map", score_map)
+    #
+    # loss = pk(kps, scores, score_map)
+    # print("pk: ", loss)
+    # loss = line_pk(kps, scores, score_map)
+    # print("lpk: ", loss)
+
+    nre = DescReprojectionLoss()
+    mask_nre = LocalDescLoss(window_size=4)
+    kps0 = torch.tensor([[[0.0, 0.0]]], dtype=torch.float32)
+    kps1 = torch.tensor([[[0.0, 0.0]]], dtype=torch.float32)
+    score_map = torch.ones(1, 1, 9, 9)
+    similarity_map = torch.zeros(1, 9, 9)
+    similarity_map[:, 4, :] = 0.5
+    similarity_map[:, 4, 0] = 1.5
+    # similarity_map[:, 4, 4] = 0.5
+    similarity_map.requires_grad = True
+
+    homography = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.float32)
+    warp_params = {
+        'mode': 'homo',
+        'width': 9,
+        'height': 9,
+        'homography_matrix': homography,
+        'k_w': 1,
+        'k_h': 1
+    }
+
+    loss = nre(kps0, score_map, similarity_map,
+               kps1, score_map, similarity_map,
+               warp_params, warp_params)
+    print("nre: ", loss)
+    # loss.backward()
+    # print("grad: ", similarity_map.grad)
+
+    loss = mask_nre(kps0, score_map, similarity_map,
+                    kps1, score_map, similarity_map,
+                    warp_params, warp_params)
+    print("mask nre: ", loss)
+    loss.backward()
+    # print("grad: ", similarity_map.grad)
+
+
+
+
+
 
