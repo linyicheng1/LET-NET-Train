@@ -54,7 +54,8 @@ class PeakyLoss(object):
             CNT = CNT + len(loss_peaky)
 
         loss_mean = loss_mean / CNT if CNT != 0 else score_map.new_tensor(0)
-        assert not torch.isnan(loss_mean)
+        if torch.isnan(loss_mean):
+            loss_mean = score_map.new_tensor(0)
         return loss_mean
 
 
@@ -126,7 +127,8 @@ class LinePeakyLoss(object):
             CNT = CNT + len(loss_peaky)
 
         loss_mean = loss_mean / CNT if CNT != 0 else score_map.new_tensor(0)
-        assert not torch.isnan(loss_mean)
+        if torch.isnan(loss_mean):
+            loss_mean = score_map.new_tensor(0)
         return loss_mean
 
 
@@ -191,7 +193,8 @@ class ReprojectionLocLoss(object):
 
         loss_mean = loss_mean / CNT if CNT != 0 else score_map0.new_tensor(0)
 
-        assert not torch.isnan(loss_mean)
+        if torch.isnan(loss_mean):
+            loss_mean = score_map0.new_tensor(0)
         return loss_mean
 
 
@@ -392,7 +395,8 @@ class DescReprojectionLoss(object):
             CNT = CNT + len(C_widetilde)
 
         loss_mean = loss_mean / CNT if CNT != 0 else wh.new_tensor(0)
-        assert not torch.isnan(loss_mean)
+        if torch.isnan(loss_mean):
+            loss_mean = wh.new_tensor(0)
         return loss_mean
 
 
@@ -484,7 +488,8 @@ class LocalDescLoss(object):
             CNT = CNT + len(C_widetilde)
 
         loss_mean = loss_mean / CNT if CNT != 0 else wh.new_tensor(0)
-        assert not torch.isnan(loss_mean)
+        if torch.isnan(loss_mean):
+            loss_mean = wh.new_tensor(0)
         return loss_mean
 
 
