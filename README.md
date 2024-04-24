@@ -2,6 +2,8 @@
 
 This is the training code for the paper **Breaking of brightness consistency in optical flow with a lightweight CNN network**. The new release has a simpler and clearer code that has been fully tested and validated. 
 
+A detailed description is available at [Wiki](https://github.com/linyicheng1/LET-NET-Train/wiki)
+
 ## TODO List 
 
 - Realease the final pretrained model of color and grayscale version.
