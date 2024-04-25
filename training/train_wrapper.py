@@ -325,6 +325,12 @@ class TrainWrapper(LETNetTrain):
         valid_mask = valid_mask[:num]
         return [kps_add], [scores_kps], valid_mask.sum()
 
+    def backward(self, loss, *args, **kwargs):
+        if loss.requires_grad:
+            loss.backward()
+        else:
+            logging.debug('loss is not backward')
+
     def compute_correspondence(self, pred0, pred1, batch, rand=False):
         # image size
         b, c, h, w = pred0['scores_map'].shape
@@ -570,7 +576,8 @@ class TrainWrapper(LETNetTrain):
         for idx in range(b):
             kpts0, kpts1 = pred['kpts0'][idx][:self.top_k].detach(), pred['kpts1'][idx][:self.top_k].detach()
             desc0, desc1 = pred['desc0'][idx][:self.top_k].detach(), pred['desc1'][idx][:self.top_k].detach()
-
+            if len(kpts0) == 0 or len(kpts1) == 0:
+                return pred['kpts0'][0].new_tensor(0)
             matches_est = mutual_argmax(desc0 @ desc1.t())
 
             mkpts0, mkpts1 = kpts0[matches_est[0]], kpts1[matches_est[1]]
