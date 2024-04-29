@@ -36,9 +36,9 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     torch.autograd.set_detect_anomaly(True)
 
-    # pretrained_model = None
-    pretrained_model = "/home/server/linyicheng/py_proj/LET-NET-Train-git/LET-NET-Train/log_main/train/Version-0426-090638/checkpoints/last.ckpt"
-    debug = False
+    pretrained_model = None
+    # pretrained_model = "/home/server/linyicheng/py_proj/LET-NET-Train-git/LET-NET-Train/log_main/line_peaky/checkpoints/epoch=56-mean_metric=0.3060.ckpt"
+    debug = True
 
     c1 = 8
     c2 = 16

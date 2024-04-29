@@ -82,7 +82,7 @@ class TrainWrapper(LETNetTrain):
                 self.load_state_dict(state_dict, strict=False)
             else:
                 logging.error(f"Can not find pretrained model: {pretrained_model}")
-
+        # self.save_let_net("./weight/line.pth")
         # ================ losses ================
 
         if self.w_pk > 0:

@@ -225,6 +225,9 @@ class LETNetTrain(BaseNet):
         else:
             return desc_map, score_map, local_desc
 
+    def save_let_net(self, path):
+        torch.save(self.let_net.state_dict(), path)
+
 
 if __name__ == '__main__':
     # net = LETNetTrain()
