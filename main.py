@@ -38,7 +38,7 @@ if __name__ == '__main__':
 
     pretrained_model = None
     # pretrained_model = "/home/server/linyicheng/py_proj/LET-NET-Train-git/LET-NET-Train/log_main/line_peaky/checkpoints/epoch=56-mean_metric=0.3060.ckpt"
-    debug = True
+    debug = False
 
     c1 = 8
     c2 = 16
