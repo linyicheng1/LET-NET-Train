@@ -54,8 +54,7 @@ class PeakyLoss(object):
             CNT = CNT + len(loss_peaky)
 
         loss_mean = loss_mean / CNT if CNT != 0 else score_map.new_tensor(0)
-        if torch.isnan(loss_mean):
-            loss_mean = score_map.new_tensor(0)
+        assert not torch.isnan(loss_mean)
         return loss_mean
 
 
@@ -127,8 +126,7 @@ class LinePeakyLoss(object):
             CNT = CNT + len(loss_peaky)
 
         loss_mean = loss_mean / CNT if CNT != 0 else score_map.new_tensor(0)
-        if torch.isnan(loss_mean):
-            loss_mean = score_map.new_tensor(0)
+        assert not torch.isnan(loss_mean)
         return loss_mean
 
 
@@ -193,8 +191,7 @@ class ReprojectionLocLoss(object):
 
         loss_mean = loss_mean / CNT if CNT != 0 else score_map0.new_tensor(0)
 
-        if torch.isnan(loss_mean):
-            loss_mean = score_map0.new_tensor(0)
+        assert not torch.isnan(loss_mean)
         return loss_mean
 
 
@@ -310,8 +307,7 @@ class ScoreMapRepLoss(object):
                 CNT = CNT + len(loss10)
 
         loss_mean = loss_mean / CNT if CNT != 0 else kps0[0].new_tensor(0)
-        if torch.isnan(loss_mean):
-            loss_mean = kps0[0].new_tensor(0)
+        assert not torch.isnan(loss_mean)
         return loss_mean
 
 
@@ -395,8 +391,7 @@ class DescReprojectionLoss(object):
             CNT = CNT + len(C_widetilde)
 
         loss_mean = loss_mean / CNT if CNT != 0 else wh.new_tensor(0)
-        if torch.isnan(loss_mean):
-            loss_mean = wh.new_tensor(0)
+        assert not torch.isnan(loss_mean)
         return loss_mean
 
 
@@ -440,8 +435,6 @@ class LocalDescLoss(object):
             similarity_map_10_valid = (similarity_map_10_valid - 1) * self.inv_temp
 
             # local mask
-            W = (self.window_size + 1)
-
             kp0 = torch.maximum(torch.tensor([0, 0]).to(kps01_wh.device),
                                 kps01_wh.detach().int() - self.window_size // 2)
             kp1 = torch.minimum(torch.tensor([w-1, h-1]).to(kps01_wh.device),
@@ -488,60 +481,64 @@ class LocalDescLoss(object):
             CNT = CNT + len(C_widetilde)
 
         loss_mean = loss_mean / CNT if CNT != 0 else wh.new_tensor(0)
-        if torch.isnan(loss_mean):
-            loss_mean = wh.new_tensor(0)
+        # print("loss: ", loss_mean)
+        assert not torch.isnan(loss_mean)
         return loss_mean
 
 
 if __name__ == '__main__':
-    # pk = PeakyLoss()
-    # line_pk = LinePeakyLoss()
-    # kps = torch.tensor([[[4, 4]]], dtype=torch.float32)
-    # scores = torch.tensor([[0.5]], dtype=torch.float32)
-    # score_map = torch.zeros(1, 1, 8, 8)
-    # score_map[:, :, 4, :] = 1
-    # score_map.requires_grad = True
-    # print("score_map", score_map)
-    #
-    # loss = pk(kps, scores, score_map)
-    # print("pk: ", loss)
-    # loss = line_pk(kps, scores, score_map)
-    # print("lpk: ", loss)
+    pk = PeakyLoss()
+    line_pk = LinePeakyLoss()
+    kps = torch.tensor([[[4, 4]]], dtype=torch.float32)
+    scores = torch.tensor([[0.5]], dtype=torch.float32)
+    score_map = torch.zeros(1, 1, 8, 8) + 0.8
+    score_map[:, :, 0, 0] = 1
+    score_map[:, :, 1, 1] = 1
+    score_map[:, :, 2, 2] = 1
+    score_map[:, :, 3, 3] = 1
+    score_map[:, :, 4, 4] = 1
+    score_map[:, :, 5, 5] = 1
+    score_map[:, :, 6, 6] = 1
+    score_map[:, :, 7, 7] = 1
+    score_map.requires_grad = True
+    print("score_map", score_map)
 
-    nre = DescReprojectionLoss()
-    mask_nre = LocalDescLoss(window_size=4)
-    kps0 = torch.tensor([[[0.0, 0.0]]], dtype=torch.float32)
-    kps1 = torch.tensor([[[0.0, 0.0]]], dtype=torch.float32)
-    score_map = torch.ones(1, 1, 9, 9)
-    similarity_map = torch.zeros(1, 9, 9)
-    similarity_map[:, 4, :] = 0.5
-    similarity_map[:, 4, 0] = 1.5
-    # similarity_map[:, 4, 4] = 0.5
-    similarity_map.requires_grad = True
-
-    homography = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.float32)
-    warp_params = {
-        'mode': 'homo',
-        'width': 9,
-        'height': 9,
-        'homography_matrix': homography,
-        'k_w': 1,
-        'k_h': 1
-    }
-
-    loss = nre(kps0, score_map, similarity_map,
-               kps1, score_map, similarity_map,
-               warp_params, warp_params)
-    print("nre: ", loss)
+    loss = pk(kps, scores, score_map)
     # loss.backward()
-    # print("grad: ", similarity_map.grad)
+    # print("pk: ", loss, score_map.grad)
 
-    loss = mask_nre(kps0, score_map, similarity_map,
-                    kps1, score_map, similarity_map,
-                    warp_params, warp_params)
-    print("mask nre: ", loss)
+    loss = line_pk(kps, scores, score_map)
     loss.backward()
-    # print("grad: ", similarity_map.grad)
+    print("lpk: ", loss, score_map.grad)
+
+    # nre = DescReprojectionLoss()
+    # mask_nre = LocalDescLoss(window_size=4)
+    # kps0 = torch.tensor([[[0.0, 0.0]]], dtype=torch.float32)
+    # kps1 = torch.tensor([[[0.0, 0.0]]], dtype=torch.float32)
+    # score_map = torch.ones(1, 1, 9, 9)
+    # similarity_map = torch.zeros(1, 9, 9)
+    # similarity_map[:, 4, :] = 0.5
+    # similarity_map[:, 4, 0] = 1.5
+    # # similarity_map[:, 4, 4] = 0.5
+    # similarity_map.requires_grad = True
+    #
+    # homography = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.float32)
+    # warp_params = {
+    #     'mode': 'homo',
+    #     'width': 9,
+    #     'height': 9,
+    #     'homography_matrix': homography,
+    #     'k_w': 1,
+    #     'k_h': 1
+    # }
+    #
+    # loss = nre(kps0, score_map, similarity_map,
+    #            kps1, score_map, similarity_map,
+    #            warp_params, warp_params)
+    # print("nre: ", loss)
+    # loss.backward()
+    # # print("grad: ", similarity_map.grad)
+
 
 
 

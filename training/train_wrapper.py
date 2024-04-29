@@ -279,20 +279,22 @@ class TrainWrapper(LETNetTrain):
                                              global_step=self.global_step, dataformats='HWC')
             self.logger.experiment.add_image(f'{suffix}image/{idx}_tgt', torch.tensor(image1_kpts),
                                              global_step=self.global_step, dataformats='HWC')
-
+            # =================== local descriptors
+            self.logger.experiment.add_image(f'{suffix}local_desc/{idx}_src', torch.tensor(l_desc0),
+                                             global_step=self.global_step, dataformats='CHW')
+            self.logger.experiment.add_image(f'{suffix}local_desc/{idx}_tgt', torch.tensor(l_desc1),
+                                             global_step=self.global_step, dataformats='CHW')
             # =================== matches
             desc0, desc1 = pred['desc0'][idx][:self.top_k].detach(), pred['desc1'][idx][:self.top_k].detach()
+            if desc0.shape[0] == 0 or desc1.shape[0] == 0:
+                continue
             matches_est = mutual_argmax(desc0 @ desc1.t())
             mkpts0, mkpts1 = kpts0[matches_est[0]][:, [1, 0]], kpts1[matches_est[1]][:, [1, 0]]
 
             match_image = plot_matches(image0, image1, mkpts0, mkpts1)
             self.logger.experiment.add_image(f'{suffix}matches/{idx}', torch.tensor(match_image),
                                              global_step=self.global_step, dataformats='HWC')
-            # =================== local descriptors
-            self.logger.experiment.add_image(f'{suffix}local_desc/{idx}_src', torch.tensor(l_desc0),
-                                             global_step=self.global_step, dataformats='CHW')
-            self.logger.experiment.add_image(f'{suffix}local_desc/{idx}_tgt', torch.tensor(l_desc1),
-                                             global_step=self.global_step, dataformats='CHW')
+
 
     def add_random_kps(self, kps, score_map):
         b, c, h, w = score_map.shape
@@ -330,6 +332,11 @@ class TrainWrapper(LETNetTrain):
             loss.backward()
         else:
             logging.debug('loss is not backward')
+
+    def on_before_optimizer_step(self, optimizer):
+        if torch.isnan(self.let_net.block1.conv1.weight.grad).any():
+            optimizer.zero_grad()
+            logging.log(logging.ERROR, 'nan in grad')
 
     def compute_correspondence(self, pred0, pred1, batch, rand=False):
         # image size
